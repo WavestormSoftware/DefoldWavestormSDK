@@ -14,6 +14,11 @@
 //   wavestorm.invite(user_id, message, cb), wavestorm.open_overlay(), wavestorm.open_launcher(slug), wavestorm.shutdown()
 //   wavestorm.workshop_subscribed(cb), workshop_query({q=, tag=, sort=, page=}, cb), workshop_subscribe(id, cb), workshop_unsubscribe(id, cb),
 //   wavestorm.workshop_set_enabled(id, on, cb), workshop_create_item({title=, description=}, cb), workshop_upload_version(id, folder, version, changelog, cb)
+//   wavestorm.voice_join(room, cb), voice_leave(cb), voice_state(cb), voice_set_muted(bool, cb), voice_set_deafened(bool, cb),
+//   wavestorm.voice_set_user_muted(user_id, bool, cb), voice_set_user_volume(user_id, 0..2, cb)
+//   wavestorm.net_listen(cb), net_connect(user_id, cb), net_disconnect(user_id, cb), net_send(user_id, bytes, reliable) -> queued?
+//   events: wavestorm.on("net.packet", function(user_id, reliable, bytes) end), "net.connected"/"net.disconnected" (d.userId),
+//           "voice.joined"/"voice.left" (d.userId), "voice.speaking" (d.userId, d.speaking)
 //   events: wavestorm.on("workshop.installed", function(d) -- d.itemId, d.path end), wavestorm.on("workshop.removed", ...)
 //   wavestorm.unlock_achievement(api_name, cb), wavestorm.achievements(cb), wavestorm.stats(cb), wavestorm.set_stats({name = value}, cb)
 #pragma once
@@ -275,6 +280,31 @@ static int l_workshop_upload_version(lua_State *L) {
     p += '}';
     return call_with(L, "workshop.uploadVersion", p, 5);
 }
+// Voice and P2P. Rooms: "game:<gameId>:<name>", up to 8 players. Packets are raw bytes (Lua strings), up to 16000.
+static std::string bool_str(lua_State *L, int i) { return lua_toboolean(L, i) ? "true" : "false"; }
+static int l_voice_join(lua_State *L) {
+    std::string p = "{\"room\":"; size_t n; const char *s = luaL_checklstring(L, 1, &n); encodeString(s, n, p); p += '}';
+    return call_with(L, "voice.join", p, 2);
+}
+static int l_voice_leave(lua_State *L) { return call_with(L, "voice.leave", "", 1); }
+static int l_voice_state(lua_State *L) { return call_with(L, "voice.state", "", 1); }
+static int l_voice_set_muted(lua_State *L) { return call_with(L, "voice.setMuted", "{\"muted\":" + bool_str(L, 1) + "}", 2); }
+static int l_voice_set_deafened(lua_State *L) { return call_with(L, "voice.setDeafened", "{\"deafened\":" + bool_str(L, 1) + "}", 2); }
+static int l_voice_set_user_muted(lua_State *L) {
+    return call_with(L, "voice.setUserMuted", "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1)) + ",\"muted\":" + bool_str(L, 2) + "}", 3);
+}
+static int l_voice_set_user_volume(lua_State *L) {
+    char b[32]; std::snprintf(b, sizeof b, "%.3f", luaL_checknumber(L, 2));
+    return call_with(L, "voice.setUserVolume", "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1)) + ",\"volume\":" + b + "}", 3);
+}
+static int l_net_listen(lua_State *L) { return call_with(L, "net.listen", "", 1); }
+static int l_net_connect(lua_State *L) { return call_with(L, "net.connect", "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1)) + "}", 2); }
+static int l_net_disconnect(lua_State *L) { return call_with(L, "net.disconnect", "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1)) + "}", 2); }
+static int l_net_send(lua_State *L) {
+    const lua_Integer id = luaL_checkinteger(L, 1); size_t n; const char *s = luaL_checklstring(L, 2, &n);
+    lua_pushboolean(L, id > 0 && n <= 16000 && ws_send_packet(uint32_t(id), lua_toboolean(L, 3), s, uint32_t(n)));
+    return 1;
+}
 static int l_open_overlay(lua_State *L) { return call_with(L, "overlay.open", "", 0); }
 static int l_open_launcher(lua_State *L) { lua_pushboolean(L, ws_open_launcher(luaL_checkstring(L, 1))); return 1; }
 
@@ -294,6 +324,15 @@ static void dispatch_event(const char *name, const char *json) {
 static int l_run_callbacks(lua_State *L) {
     ws_message m;
     while (ws_poll(&m)) {
+        if (m.kind == WS_MSG_PACKET) { // raw bytes, not JSON: handler(user_id, reliable, bytes)
+            auto it = g_handlers.find("net.packet");
+            lua_State *CL;
+            if (it != g_handlers.end() && ws_cb_begin(it->second, &CL)) {
+                lua_pushinteger(CL, lua_Integer(m.id)); lua_pushboolean(CL, m.ok); lua_pushlstring(CL, m.json, m.len);
+                ws_cb_call(CL, 3);
+            }
+            continue;
+        }
         if (m.kind == WS_MSG_RESULT) {
             auto it = g_pending.find(m.id);
             if (it == g_pending.end()) continue;
@@ -321,6 +360,9 @@ static const luaL_Reg functions[] = {
     {"workshop_subscribed", l_workshop_subscribed}, {"workshop_query", l_workshop_query}, {"workshop_subscribe", l_workshop_subscribe},
     {"workshop_unsubscribe", l_workshop_unsubscribe}, {"workshop_set_enabled", l_workshop_set_enabled}, {"workshop_create_item", l_workshop_create_item},
     {"workshop_upload_version", l_workshop_upload_version},
+    {"voice_join", l_voice_join}, {"voice_leave", l_voice_leave}, {"voice_state", l_voice_state}, {"voice_set_muted", l_voice_set_muted},
+    {"voice_set_deafened", l_voice_set_deafened}, {"voice_set_user_muted", l_voice_set_user_muted}, {"voice_set_user_volume", l_voice_set_user_volume},
+    {"net_listen", l_net_listen}, {"net_connect", l_net_connect}, {"net_disconnect", l_net_disconnect}, {"net_send", l_net_send},
     {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
 
 } // namespace wsl

@@ -35,14 +35,15 @@ enum {
     WS_ERR_PROTOCOL = 5      /* launcher too old/new for this SDK */
 };
 
-enum { WS_MSG_RESULT = 1, WS_MSG_EVENT = 2 };
+enum { WS_MSG_RESULT = 1, WS_MSG_EVENT = 2, WS_MSG_PACKET = 3 };
 
 typedef struct ws_message {
     int kind;            /* WS_MSG_RESULT or WS_MSG_EVENT */
     uint32_t id;         /* result: the id ws_call returned */
     int ok;              /* result: 1 = success, 0 = json is {"error": "..."} */
     const char *name;    /* event name ("message", "presence", "join", "disconnected", ...); "" for results */
-    const char *json;    /* payload; valid until the next ws_poll call */
+    const char *json;    /* payload (JSON text, or the raw bytes of a packet); valid until the next ws_poll call */
+    uint32_t len;        /* payload length in bytes. WS_MSG_PACKET: id = the sending player's user id, ok = 1 if it was sent reliably */
 } ws_message;
 
 WS_API int ws_init(void);                       /* connect and authenticate; blocks up to 5 s */
@@ -51,6 +52,7 @@ WS_API int ws_connected(void);
 WS_API const char *ws_hello_json(void);         /* {"user": {...}, "gameId": N, "joinInfo": "..."} after ws_init, else "{}" */
 WS_API uint32_t ws_call(const char *method, const char *params_json); /* 0 if not connected; params may be NULL */
 WS_API int ws_poll(ws_message *out);            /* 1 if a message was written to *out, 0 if none is waiting */
+WS_API int ws_send_packet(uint32_t peer, int reliable, const void *data, uint32_t len); /* game data to a player you did net.connect to; 1 if queued */
 WS_API int ws_open_launcher(const char *game_slug); /* ask the launcher to (re)start this game; returns 1 if it could be asked */
 WS_API const char *ws_version(void);
 

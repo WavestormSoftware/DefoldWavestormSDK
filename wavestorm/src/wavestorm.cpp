@@ -151,6 +151,8 @@ void readLoop(State *s) {
             const uint16_t nl = get16(&body[1]);
             if (3u + nl > len) break;
             m.kind = WS_MSG_EVENT; m.name.assign(body, 3, nl); m.json.assign(body, 3 + nl, std::string::npos);
+        } else if (type == 4 && len >= 6) {
+            m.kind = WS_MSG_PACKET; m.id = get32(&body[1]); m.ok = body[5] & 1; m.json.assign(body, 6, std::string::npos);
         } else continue; // unknown frame type from a newer launcher: skip it
         std::lock_guard<std::mutex> l(s->m);
         if (m.kind == WS_MSG_RESULT) s->pending.erase(m.id);
@@ -240,8 +242,19 @@ int ws_poll(ws_message *out) {
     s->current = std::move(s->queue.front());
     s->queue.pop_front();
     out->kind = s->current.kind; out->id = s->current.id; out->ok = s->current.ok;
-    out->name = s->current.name.c_str(); out->json = s->current.json.c_str();
+    out->name = s->current.name.c_str(); out->json = s->current.json.c_str(); out->len = uint32_t(s->current.json.size());
     return 1;
+}
+
+int ws_send_packet(uint32_t peer, int reliable, const void *data, uint32_t len) {
+    State *s = g;
+    if (!s || !s->connected || !data || len == 0 || len > 16000) return 0;
+    std::string f;
+    put32(f, 1 + 4 + 1 + len);
+    f += char(4); put32(f, peer); f += char(reliable ? 1 : 0);
+    f.append(static_cast<const char *>(data), len);
+    std::lock_guard<std::mutex> l(s->wm);
+    return s->conn.write(f.data(), uint32_t(f.size())) ? 1 : 0;
 }
 
 int ws_open_launcher(const char *slug) {
