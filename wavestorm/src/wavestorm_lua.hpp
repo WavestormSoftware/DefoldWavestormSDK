@@ -1,0 +1,289 @@
+// Wavestorm SDK for Lua: shared by the plain Lua module (lua_module.cpp) and the Defold extension.
+// The including file defines how callbacks are stored and called:
+//   struct WsCallback;  WsCallback *ws_cb_create(lua_State *L, int index);  void ws_cb_destroy(WsCallback *);
+//   bool ws_cb_begin(WsCallback *, lua_State **L);  // pushes the function (Defold: and self); false if gone
+//   void ws_cb_call(lua_State *L, int nargs);       // calls what ws_cb_begin pushed with nargs more values
+//
+// Lua API (module table `wavestorm`):
+//   ok, err = wavestorm.init()          err: "no_runtime" | "connect" | "auth" | "timeout" | "protocol"
+//   wavestorm.run_callbacks()           every frame (the Defold extension does this for you)
+//   wavestorm.call(method, params, cb)  cb(ok, result)   raw call, see docs/sdk.md
+//   wavestorm.on(event, cb)             cb(data); event "*" gets cb(name, data); nil cb removes
+//   wavestorm.user(), wavestorm.game_id(), wavestorm.join_info(), wavestorm.connected()
+//   wavestorm.set_presence(text, join_info), wavestorm.friends(cb), wavestorm.send_chat(user_id, text, cb),
+//   wavestorm.invite(user_id, message, cb), wavestorm.open_overlay(), wavestorm.open_launcher(slug), wavestorm.shutdown()
+#pragma once
+#include "wavestorm.h"
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <string>
+
+#ifndef WS_LUA_INCLUDED // the Defold extension gets Lua from dmsdk/sdk.h instead
+extern "C" {
+#include <lauxlib.h>
+#include <lua.h>
+}
+#endif
+
+#if LUA_VERSION_NUM < 502
+#  define ws_rawlen lua_objlen
+#else
+#  define ws_rawlen lua_rawlen
+#endif
+
+namespace wsl {
+
+static std::map<uint32_t, WsCallback *> g_pending;
+static std::map<std::string, WsCallback *> g_handlers;
+static std::string g_join;
+
+// ---- JSON <-> Lua
+static void encode(lua_State *L, int idx, std::string &out, int depth = 0);
+static void encodeString(const char *s, size_t n, std::string &out) {
+    out += '"';
+    for (size_t i = 0; i < n; ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
+        else if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); out += b; }
+        else out += char(c);
+    }
+    out += '"';
+}
+static void encode(lua_State *L, int idx, std::string &out, int depth) {
+    if (idx < 0) idx = lua_gettop(L) + idx + 1;
+    if (depth > 32) luaL_error(L, "wavestorm: table nested too deeply");
+    switch (lua_type(L, idx)) {
+    case LUA_TNIL: out += "null"; return;
+    case LUA_TBOOLEAN: out += lua_toboolean(L, idx) ? "true" : "false"; return;
+    case LUA_TNUMBER: {
+        const double d = lua_tonumber(L, idx);
+        if (!std::isfinite(d)) { out += "null"; return; }
+        char b[32];
+        if (d == std::floor(d) && std::fabs(d) < 1e15) std::snprintf(b, sizeof b, "%.0f", d); else std::snprintf(b, sizeof b, "%.17g", d);
+        out += b; return;
+    }
+    case LUA_TSTRING: { size_t n; const char *s = lua_tolstring(L, idx, &n); encodeString(s, n, out); return; }
+    case LUA_TTABLE: {
+        const size_t n = ws_rawlen(L, idx);
+        if (n > 0) { // sequence -> array
+            out += '[';
+            for (size_t i = 1; i <= n; ++i) { if (i > 1) out += ','; lua_rawgeti(L, idx, int(i)); encode(L, -1, out, depth + 1); lua_pop(L, 1); }
+            out += ']'; return;
+        }
+        out += '{'; bool first = true;
+        lua_pushnil(L);
+        while (lua_next(L, idx)) {
+            if (lua_type(L, -2) == LUA_TSTRING || lua_type(L, -2) == LUA_TNUMBER) {
+                if (!first) { out += ','; } first = false;
+                lua_pushvalue(L, -2); size_t kn; const char *k = lua_tolstring(L, -1, &kn); encodeString(k, kn, out); lua_pop(L, 1);
+                out += ':'; encode(L, -1, out, depth + 1);
+            }
+            lua_pop(L, 1);
+        }
+        out += '}'; return;
+    }
+    default: luaL_error(L, "wavestorm: can't send a %s", luaL_typename(L, idx));
+    }
+}
+
+struct Parser {
+    lua_State *L; const char *p, *end;
+    void ws() { while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) ++p; }
+    bool str() { // pushes a Lua string
+        if (p >= end || *p != '"') return false;
+        ++p; std::string s;
+        while (p < end && *p != '"') {
+            if (*p != '\\') { s += *p++; continue; }
+            if (++p >= end) return false;
+            const char e = *p++;
+            if (e == 'u') {
+                if (end - p < 4) return false;
+                unsigned cp = unsigned(std::strtoul(std::string(p, 4).c_str(), nullptr, 16)); p += 4;
+                if (cp >= 0xD800 && cp <= 0xDBFF && end - p >= 6 && p[0] == '\\' && p[1] == 'u') { // surrogate pair
+                    const unsigned lo = unsigned(std::strtoul(std::string(p + 2, 4).c_str(), nullptr, 16));
+                    if (lo >= 0xDC00 && lo <= 0xDFFF) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); p += 6; }
+                }
+                if (cp < 0x80) s += char(cp);
+                else if (cp < 0x800) { s += char(0xC0 | (cp >> 6)); s += char(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x10000) { s += char(0xE0 | (cp >> 12)); s += char(0x80 | ((cp >> 6) & 0x3F)); s += char(0x80 | (cp & 0x3F)); }
+                else { s += char(0xF0 | (cp >> 18)); s += char(0x80 | ((cp >> 12) & 0x3F)); s += char(0x80 | ((cp >> 6) & 0x3F)); s += char(0x80 | (cp & 0x3F)); }
+            } else s += e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'b' ? '\b' : e == 'f' ? '\f' : e;
+        }
+        if (p >= end) return false;
+        ++p;
+        lua_pushlstring(L, s.data(), s.size());
+        return true;
+    }
+    bool value(int depth = 0) { // pushes one value
+        ws();
+        if (p >= end || depth > 64) return false;
+        lua_checkstack(L, 4);
+        if (*p == '{') {
+            ++p; lua_newtable(L); ws();
+            if (p < end && *p == '}') { ++p; return true; }
+            for (;;) {
+                ws(); if (!str()) return false; ws();
+                if (p >= end || *p++ != ':') return false;
+                if (!value(depth + 1)) return false;
+                lua_rawset(L, -3); ws();
+                if (p < end && *p == ',') { ++p; continue; }
+                if (p < end && *p == '}') { ++p; return true; }
+                return false;
+            }
+        }
+        if (*p == '[') {
+            ++p; lua_newtable(L); ws(); int i = 1;
+            if (p < end && *p == ']') { ++p; return true; }
+            for (;;) {
+                if (!value(depth + 1)) return false;
+                lua_rawseti(L, -2, i++); ws();
+                if (p < end && *p == ',') { ++p; continue; }
+                if (p < end && *p == ']') { ++p; return true; }
+                return false;
+            }
+        }
+        if (*p == '"') return str();
+        if (end - p >= 4 && !std::strncmp(p, "true", 4)) { p += 4; lua_pushboolean(L, 1); return true; }
+        if (end - p >= 5 && !std::strncmp(p, "false", 5)) { p += 5; lua_pushboolean(L, 0); return true; }
+        if (end - p >= 4 && !std::strncmp(p, "null", 4)) { p += 4; lua_pushnil(L); return true; }
+        char *e = nullptr;
+        const double d = std::strtod(p, &e);
+        if (e == p) return false;
+        p = e; lua_pushnumber(L, d);
+        return true;
+    }
+};
+// Pushes the decoded value (nil on bad JSON).
+static void push_json(lua_State *L, const char *json) {
+    const int top = lua_gettop(L);
+    Parser ps{L, json, json + std::strlen(json)};
+    if (!*json || !ps.value()) { lua_settop(L, top); lua_pushnil(L); }
+}
+
+// ---- calls
+static int call_with(lua_State *L, const char *method, const std::string &params, int cbIndex) {
+    const uint32_t id = ws_call(method, params.empty() ? nullptr : params.c_str());
+    if (cbIndex && !lua_isnoneornil(L, cbIndex)) {
+        luaL_checktype(L, cbIndex, LUA_TFUNCTION);
+        WsCallback *cb = ws_cb_create(L, cbIndex);
+        if (id) g_pending[id] = cb;
+        else { // not connected: answer right away (from run_callbacks would be nicer, but this keeps it simple)
+            lua_State *CL;
+            if (ws_cb_begin(cb, &CL)) { lua_pushboolean(CL, 0); lua_newtable(CL); lua_pushstring(CL, "not connected"); lua_setfield(CL, -2, "error"); ws_cb_call(CL, 2); }
+            ws_cb_destroy(cb);
+        }
+    }
+    lua_pushboolean(L, id != 0);
+    return 1;
+}
+static std::string table_json(lua_State *L, int idx) {
+    std::string s;
+    if (!lua_isnoneornil(L, idx)) { luaL_checktype(L, idx, LUA_TTABLE); encode(L, idx, s); }
+    return s;
+}
+
+static int l_init(lua_State *L) {
+    static const char *codes[] = {"", "no_runtime", "connect", "auth", "timeout", "protocol"};
+    const int r = ws_init();
+    if (r == WS_OK) {
+        // join info from the hello, kept so join_info() works without parsing every time
+        push_json(L, ws_hello_json());
+        if (lua_istable(L, -1)) { lua_getfield(L, -1, "joinInfo"); g_join = lua_isstring(L, -1) ? lua_tostring(L, -1) : ""; lua_pop(L, 1); }
+        lua_pop(L, 1);
+        lua_pushboolean(L, 1); return 1;
+    }
+    lua_pushboolean(L, 0); lua_pushstring(L, r > 0 && r <= 5 ? codes[r] : "unknown"); return 2;
+}
+static int l_shutdown(lua_State *) {
+    ws_shutdown();
+    for (auto &kv : g_pending) ws_cb_destroy(kv.second);
+    g_pending.clear();
+    return 0;
+}
+static int l_connected(lua_State *L) { lua_pushboolean(L, ws_connected()); return 1; }
+static int l_hello_field(lua_State *L, const char *field) {
+    push_json(L, ws_hello_json());
+    if (!lua_istable(L, -1)) return 1;
+    lua_getfield(L, -1, field);
+    return 1;
+}
+static int l_user(lua_State *L) { return l_hello_field(L, "user"); }
+static int l_game_id(lua_State *L) { return l_hello_field(L, "gameId"); }
+static int l_join_info(lua_State *L) { lua_pushstring(L, g_join.c_str()); return 1; }
+static int l_call(lua_State *L) { const char *m = luaL_checkstring(L, 1); return call_with(L, m, table_json(L, 2), 3); }
+
+static int l_on(lua_State *L) {
+    const std::string name = luaL_checkstring(L, 1);
+    auto it = g_handlers.find(name);
+    if (it != g_handlers.end()) { ws_cb_destroy(it->second); g_handlers.erase(it); }
+    if (!lua_isnoneornil(L, 2)) { luaL_checktype(L, 2, LUA_TFUNCTION); g_handlers[name] = ws_cb_create(L, 2); }
+    return 0;
+}
+
+static int l_set_presence(lua_State *L) {
+    std::string p = "{";
+    if (!lua_isnoneornil(L, 1)) { p += "\"text\":"; size_t n; const char *s = luaL_checklstring(L, 1, &n); encodeString(s, n, p); }
+    if (!lua_isnoneornil(L, 2)) { if (p.size() > 1) p += ','; p += "\"joinInfo\":"; size_t n; const char *s = luaL_checklstring(L, 2, &n); encodeString(s, n, p); }
+    p += '}';
+    return call_with(L, "presence.set", p, 0);
+}
+static int l_friends(lua_State *L) { return call_with(L, "friends.list", "", 1); }
+static int l_send_chat(lua_State *L) {
+    std::string p = "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1)) + ",\"text\":";
+    size_t n; const char *s = luaL_checklstring(L, 2, &n); encodeString(s, n, p); p += '}';
+    return call_with(L, "chat.send", p, 3);
+}
+static int l_invite(lua_State *L) {
+    std::string p = "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1));
+    if (!lua_isnoneornil(L, 2)) { p += ",\"message\":"; size_t n; const char *s = luaL_checklstring(L, 2, &n); encodeString(s, n, p); }
+    p += '}';
+    return call_with(L, "invites.send", p, 3);
+}
+static int l_open_overlay(lua_State *L) { return call_with(L, "overlay.open", "", 0); }
+static int l_open_launcher(lua_State *L) { lua_pushboolean(L, ws_open_launcher(luaL_checkstring(L, 1))); return 1; }
+
+// Delivers queued results and events. Callback errors are reported, not thrown, so one bad handler can't stall the queue.
+static void dispatch_event(const char *name, const char *json) {
+    for (const char *key : {name, "*"}) {
+        auto it = g_handlers.find(key);
+        if (it == g_handlers.end()) continue;
+        lua_State *CL;
+        if (!ws_cb_begin(it->second, &CL)) continue;
+        int n = 0;
+        if (!std::strcmp(key, "*")) { lua_pushstring(CL, name); ++n; }
+        push_json(CL, json); ++n;
+        ws_cb_call(CL, n);
+    }
+}
+static int l_run_callbacks(lua_State *L) {
+    ws_message m;
+    while (ws_poll(&m)) {
+        if (m.kind == WS_MSG_RESULT) {
+            auto it = g_pending.find(m.id);
+            if (it == g_pending.end()) continue;
+            WsCallback *cb = it->second; g_pending.erase(it);
+            lua_State *CL;
+            if (ws_cb_begin(cb, &CL)) { lua_pushboolean(CL, m.ok); push_json(CL, m.json); ws_cb_call(CL, 2); }
+            ws_cb_destroy(cb);
+            continue;
+        }
+        if (!std::strcmp(m.name, "join")) {
+            push_json(L, m.json);
+            if (lua_istable(L, -1)) { lua_getfield(L, -1, "joinInfo"); if (lua_isstring(L, -1)) g_join = lua_tostring(L, -1); lua_pop(L, 1); }
+            lua_pop(L, 1);
+        }
+        dispatch_event(m.name, m.json);
+    }
+    return 0;
+}
+
+static const luaL_Reg functions[] = {
+    {"init", l_init}, {"shutdown", l_shutdown}, {"connected", l_connected}, {"run_callbacks", l_run_callbacks},
+    {"call", l_call}, {"on", l_on}, {"user", l_user}, {"game_id", l_game_id}, {"join_info", l_join_info},
+    {"set_presence", l_set_presence}, {"friends", l_friends}, {"send_chat", l_send_chat}, {"invite", l_invite},
+    {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
+
+} // namespace wsl

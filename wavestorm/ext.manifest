@@ -1,0 +1,12 @@
+name: "wavestorm"
+
+platforms:
+  x86_64-win32:
+    context:
+      libs: ["shell32"]
+  x86-win32:
+    context:
+      libs: ["shell32"]
+  x86_64-linux:
+    context:
+      libs: ["pthread"]

@@ -1,0 +1,5 @@
+[project]
+title = Wavestorm SDK
+
+[library]
+include_dirs = wavestorm
