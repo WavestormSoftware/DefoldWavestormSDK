@@ -12,6 +12,9 @@
 //   wavestorm.user(), wavestorm.game_id(), wavestorm.join_info(), wavestorm.connected()
 //   wavestorm.set_presence(text, join_info), wavestorm.friends(cb), wavestorm.send_chat(user_id, text, cb),
 //   wavestorm.invite(user_id, message, cb), wavestorm.open_overlay(), wavestorm.open_launcher(slug), wavestorm.shutdown()
+//   wavestorm.workshop_subscribed(cb), workshop_query({q=, tag=, sort=, page=}, cb), workshop_subscribe(id, cb), workshop_unsubscribe(id, cb),
+//   wavestorm.workshop_set_enabled(id, on, cb), workshop_create_item({title=, description=}, cb), workshop_upload_version(id, folder, version, changelog, cb)
+//   events: wavestorm.on("workshop.installed", function(d) -- d.itemId, d.path end), wavestorm.on("workshop.removed", ...)
 //   wavestorm.unlock_achievement(api_name, cb), wavestorm.achievements(cb), wavestorm.stats(cb), wavestorm.set_stats({name = value}, cb)
 #pragma once
 #include "wavestorm.h"
@@ -254,6 +257,24 @@ static int l_set_stats(lua_State *L) {
     std::string p = "{\"stats\":"; encode(L, 1, p); p += '}';
     return call_with(L, "stats.set", p, 2);
 }
+// Workshop: tables become the call's JSON params; cb(ok, result).
+static int l_workshop_subscribed(lua_State *L) { return call_with(L, "workshop.subscribed", "", 1); }
+static int l_workshop_query(lua_State *L) { return call_with(L, "workshop.query", table_json(L, 1), 2); }
+static int l_workshop_subscribe(lua_State *L) { return call_with(L, "workshop.subscribe", "{\"itemId\":" + std::to_string(luaL_checkinteger(L, 1)) + "}", 2); }
+static int l_workshop_unsubscribe(lua_State *L) { return call_with(L, "workshop.unsubscribe", "{\"itemId\":" + std::to_string(luaL_checkinteger(L, 1)) + "}", 2); }
+static int l_workshop_set_enabled(lua_State *L) {
+    return call_with(L, "workshop.setEnabled", "{\"itemId\":" + std::to_string(luaL_checkinteger(L, 1)) + ",\"enabled\":" + (lua_toboolean(L, 2) ? "true" : "false") + "}", 3);
+}
+static int l_workshop_create_item(lua_State *L) { return call_with(L, "workshop.createItem", table_json(L, 1), 2); }
+// workshop_upload_version(item_id, folder, version, changelog, cb): zips the folder and uploads it (changelog may be nil)
+static int l_workshop_upload_version(lua_State *L) {
+    std::string p = "{\"itemId\":" + std::to_string(luaL_checkinteger(L, 1)) + ",\"folder\":"; size_t n; const char *s;
+    s = luaL_checklstring(L, 2, &n); encodeString(s, n, p);
+    p += ",\"version\":"; s = luaL_checklstring(L, 3, &n); encodeString(s, n, p);
+    if (!lua_isnoneornil(L, 4)) { p += ",\"changelog\":"; s = luaL_checklstring(L, 4, &n); encodeString(s, n, p); }
+    p += '}';
+    return call_with(L, "workshop.uploadVersion", p, 5);
+}
 static int l_open_overlay(lua_State *L) { return call_with(L, "overlay.open", "", 0); }
 static int l_open_launcher(lua_State *L) { lua_pushboolean(L, ws_open_launcher(luaL_checkstring(L, 1))); return 1; }
 
@@ -297,6 +318,9 @@ static const luaL_Reg functions[] = {
     {"call", l_call}, {"on", l_on}, {"user", l_user}, {"game_id", l_game_id}, {"join_info", l_join_info},
     {"set_presence", l_set_presence}, {"friends", l_friends}, {"send_chat", l_send_chat}, {"invite", l_invite},
     {"unlock_achievement", l_unlock_achievement}, {"achievements", l_achievements}, {"stats", l_stats}, {"set_stats", l_set_stats},
+    {"workshop_subscribed", l_workshop_subscribed}, {"workshop_query", l_workshop_query}, {"workshop_subscribe", l_workshop_subscribe},
+    {"workshop_unsubscribe", l_workshop_unsubscribe}, {"workshop_set_enabled", l_workshop_set_enabled}, {"workshop_create_item", l_workshop_create_item},
+    {"workshop_upload_version", l_workshop_upload_version},
     {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
 
 } // namespace wsl
