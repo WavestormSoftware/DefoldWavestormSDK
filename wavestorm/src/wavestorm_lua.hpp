@@ -255,6 +255,11 @@ static int l_unlock_achievement(lua_State *L) {
     std::string p = "{\"apiName\":"; size_t n; const char *s = luaL_checklstring(L, 1, &n); encodeString(s, n, p); p += '}';
     return call_with(L, "achievements.unlock", p, 2);
 }
+// auth_assertion(audience, cb): cb(ok, {assertion=..., exp=...}), a 5 minute proof of identity for one other service
+static int l_auth_assertion(lua_State *L) {
+    std::string p = "{\"audience\":"; size_t n; const char *s = luaL_checklstring(L, 1, &n); encodeString(s, n, p); p += '}';
+    return call_with(L, "auth.assertion", p, 2);
+}
 static int l_achievements(lua_State *L) { return call_with(L, "achievements.list", "", 1); }
 static int l_stats(lua_State *L) { return call_with(L, "stats.get", "", 1); }
 static int l_set_stats(lua_State *L) {
@@ -363,6 +368,6 @@ static const luaL_Reg functions[] = {
     {"voice_join", l_voice_join}, {"voice_leave", l_voice_leave}, {"voice_state", l_voice_state}, {"voice_set_muted", l_voice_set_muted},
     {"voice_set_deafened", l_voice_set_deafened}, {"voice_set_user_muted", l_voice_set_user_muted}, {"voice_set_user_volume", l_voice_set_user_volume},
     {"net_listen", l_net_listen}, {"net_connect", l_net_connect}, {"net_disconnect", l_net_disconnect}, {"net_send", l_net_send},
-    {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
+    {"auth_assertion", l_auth_assertion}, {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
 
 } // namespace wsl
