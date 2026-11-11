@@ -21,6 +21,13 @@
 //           "voice.joined"/"voice.left" (d.userId), "voice.speaking" (d.userId, d.speaking)
 //   events: wavestorm.on("workshop.installed", function(d) -- d.itemId, d.path end), wavestorm.on("workshop.removed", ...)
 //   wavestorm.unlock_achievement(api_name, cb), wavestorm.achievements(cb), wavestorm.stats(cb), wavestorm.set_stats({name = value}, cb)
+//   wavestorm.leaderboard(stat_api_name, cb)  r.entries[i] = {rank, globalRank, userId, username, value}, r.players
+//   wavestorm.game_info(cb)  {gameId, title, slug, version, installPath};  wavestorm.chat_history(user_id, cb)
+//   wavestorm.groups(cb), wavestorm.send_group(group_id, text, cb), wavestorm.close_overlay(), wavestorm.net_peers(cb)
+//   wavestorm.voice_set_push_to_talk(bool, cb), wavestorm.voice_set_talking(bool, cb)
+//   The overlay drawn by the game (see docs/sdk.md): wavestorm.overlay_attach(width, height) -> ok, wavestorm.overlay_detach(),
+//   pixels, width, height = wavestorm.overlay_frame()   pixels (RGBA string, straight alpha, top row first) is nil unless the picture changed,
+//   wavestorm.overlay_input({type = "move"|"down"|"up"|"wheel"|"key"|"text", x =, y =, button =, dy =, key =, down =, text =})
 #pragma once
 #include "wavestorm.h"
 #include <cmath>
@@ -174,9 +181,10 @@ static void push_json(lua_State *L, const char *json) {
 
 // ---- calls
 static int call_with(lua_State *L, const char *method, const std::string &params, int cbIndex) {
+    const bool wantsAnswer = cbIndex && !lua_isnoneornil(L, cbIndex);
+    if (wantsAnswer) luaL_checktype(L, cbIndex, LUA_TFUNCTION); // before sending: an argument error must not leave a call behind
     const uint32_t id = ws_call(method, params.empty() ? nullptr : params.c_str());
-    if (cbIndex && !lua_isnoneornil(L, cbIndex)) {
-        luaL_checktype(L, cbIndex, LUA_TFUNCTION);
+    if (wantsAnswer) {
         WsCallback *cb = ws_cb_create(L, cbIndex);
         if (id) g_pending[id] = cb;
         else { // not connected: answer right away (from run_callbacks would be nicer, but this keeps it simple)
@@ -310,6 +318,36 @@ static int l_net_send(lua_State *L) {
     lua_pushboolean(L, id > 0 && n <= 16000 && ws_send_packet(uint32_t(id), lua_toboolean(L, 3), s, uint32_t(n)));
     return 1;
 }
+static std::string user_id_json(lua_State *L, int i) { return "{\"userId\":" + std::to_string(luaL_checkinteger(L, i)) + "}"; }
+static int l_leaderboard(lua_State *L) {
+    std::string p = "{\"stat\":"; size_t n; const char *s = luaL_checklstring(L, 1, &n); encodeString(s, n, p); p += '}';
+    return call_with(L, "leaderboards.get", p, 2);
+}
+static int l_game_info(lua_State *L) { return call_with(L, "game.info", "", 1); }
+static int l_chat_history(lua_State *L) { return call_with(L, "chat.history", user_id_json(L, 1), 2); }
+static int l_groups(lua_State *L) { return call_with(L, "groups.list", "", 1); }
+static int l_send_group(lua_State *L) {
+    std::string p = "{\"groupId\":" + std::to_string(luaL_checkinteger(L, 1)) + ",\"text\":";
+    size_t n; const char *s = luaL_checklstring(L, 2, &n); encodeString(s, n, p); p += '}';
+    return call_with(L, "groups.send", p, 3);
+}
+static int l_net_peers(lua_State *L) { return call_with(L, "net.peers", "", 1); }
+static int l_voice_set_push_to_talk(lua_State *L) { return call_with(L, "voice.setPushToTalk", "{\"enabled\":" + bool_str(L, 1) + "}", 2); }
+static int l_voice_set_talking(lua_State *L) { return call_with(L, "voice.setTalking", "{\"talking\":" + bool_str(L, 1) + "}", 2); }
+static int l_overlay_attach(lua_State *L) {
+    const lua_Integer w = luaL_checkinteger(L, 1), h = luaL_checkinteger(L, 2);
+    lua_pushboolean(L, w > 0 && h > 0 && ws_overlay_attach(uint32_t(w), uint32_t(h)));
+    return 1;
+}
+static int l_overlay_detach(lua_State *) { ws_overlay_detach(); return 0; }
+static int l_overlay_frame(lua_State *L) {
+    ws_frame f;
+    if (ws_overlay_frame(&f) && f.pixels) lua_pushlstring(L, reinterpret_cast<const char *>(f.pixels), size_t(f.width) * f.height * 4); else lua_pushnil(L);
+    lua_pushinteger(L, lua_Integer(f.width)); lua_pushinteger(L, lua_Integer(f.height));
+    return 3;
+}
+static int l_overlay_input(lua_State *L) { luaL_checktype(L, 1, LUA_TTABLE); return call_with(L, "overlay.input", table_json(L, 1), 0); }
+static int l_close_overlay(lua_State *L) { return call_with(L, "overlay.close", "", 0); }
 static int l_open_overlay(lua_State *L) { return call_with(L, "overlay.open", "", 0); }
 static int l_open_launcher(lua_State *L) { lua_pushboolean(L, ws_open_launcher(luaL_checkstring(L, 1))); return 1; }
 
@@ -368,6 +406,9 @@ static const luaL_Reg functions[] = {
     {"voice_join", l_voice_join}, {"voice_leave", l_voice_leave}, {"voice_state", l_voice_state}, {"voice_set_muted", l_voice_set_muted},
     {"voice_set_deafened", l_voice_set_deafened}, {"voice_set_user_muted", l_voice_set_user_muted}, {"voice_set_user_volume", l_voice_set_user_volume},
     {"net_listen", l_net_listen}, {"net_connect", l_net_connect}, {"net_disconnect", l_net_disconnect}, {"net_send", l_net_send},
-    {"auth_assertion", l_auth_assertion}, {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
+    {"leaderboard", l_leaderboard}, {"game_info", l_game_info}, {"chat_history", l_chat_history}, {"groups", l_groups}, {"send_group", l_send_group},
+    {"net_peers", l_net_peers}, {"voice_set_push_to_talk", l_voice_set_push_to_talk}, {"voice_set_talking", l_voice_set_talking},
+    {"overlay_attach", l_overlay_attach}, {"overlay_detach", l_overlay_detach}, {"overlay_frame", l_overlay_frame}, {"overlay_input", l_overlay_input},
+    {"auth_assertion", l_auth_assertion}, {"close_overlay", l_close_overlay}, {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
 
 } // namespace wsl
