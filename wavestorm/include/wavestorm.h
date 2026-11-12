@@ -55,6 +55,11 @@ WS_API uint32_t ws_call(const char *method, const char *params_json); /* 0 if no
 WS_API int ws_poll(ws_message *out);            /* 1 if a message was written to *out, 0 if none is waiting */
 WS_API int ws_send_packet(uint32_t peer, int reliable, const void *data, uint32_t len); /* game data to a player you did net.connect to; 1 if queued */
 WS_API int ws_open_launcher(const char *game_slug); /* ask the launcher to (re)start this game; returns 1 if it could be asked */
+/* Steam-style "launcher required": call first thing at startup. Returns 0 when this process was started by the launcher (carry on),
+ * 1 when it was not and the launcher has been asked to start the game properly (exit now), -1 if the launcher could not be asked
+ * (show ws_strerror(WS_ERR_NO_RUNTIME)). */
+WS_API int ws_restart_if_needed(const char *game_slug);
+WS_API int ws_has_capability(const char *name); /* 1 if the connected launcher lists it (hello "capabilities"); 0 for older launchers */
 WS_API const char *ws_version(void);
 WS_API const char *ws_strerror(int code);       /* a sentence for a ws_init result, to show the player */
 /* Block until the answer to ws_call id arrives (at most timeout_ms) and return it like ws_poll would; other messages stay

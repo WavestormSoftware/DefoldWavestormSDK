@@ -10,6 +10,7 @@
 //   wavestorm.call(method, params, cb)  cb(ok, result)   raw call, see docs/sdk.md
 //   wavestorm.on(event, cb)             cb(data); event "*" gets cb(name, data); nil cb removes
 //   wavestorm.user(), wavestorm.game_id(), wavestorm.join_info(), wavestorm.connected()
+//   wavestorm.restart_if_needed(slug) -> 0 | 1 (exit now) | -1,  wavestorm.has_capability(name)
 //   wavestorm.set_presence(text, join_info), wavestorm.friends(cb), wavestorm.send_chat(user_id, text, cb),
 //   wavestorm.invite(user_id, message, cb), wavestorm.open_overlay(), wavestorm.open_launcher(slug), wavestorm.shutdown()
 //   wavestorm.workshop_subscribed(cb), workshop_query({q=, tag=, sort=, page=}, cb), workshop_subscribe(id, cb), workshop_unsubscribe(id, cb),
@@ -349,6 +350,9 @@ static int l_overlay_frame(lua_State *L) {
 static int l_overlay_input(lua_State *L) { luaL_checktype(L, 1, LUA_TTABLE); return call_with(L, "overlay.input", table_json(L, 1), 0); }
 static int l_close_overlay(lua_State *L) { return call_with(L, "overlay.close", "", 0); }
 static int l_open_overlay(lua_State *L) { return call_with(L, "overlay.open", "", 0); }
+// restart_if_needed(slug) -> 0 running under the launcher, 1 relaunching through it (exit now), -1 could not ask it
+static int l_restart_if_needed(lua_State *L) { lua_pushinteger(L, ws_restart_if_needed(luaL_checkstring(L, 1))); return 1; }
+static int l_has_capability(lua_State *L) { lua_pushboolean(L, ws_has_capability(luaL_checkstring(L, 1))); return 1; }
 static int l_open_launcher(lua_State *L) { lua_pushboolean(L, ws_open_launcher(luaL_checkstring(L, 1))); return 1; }
 
 // Delivers queued results and events. Callback errors are reported, not thrown, so one bad handler can't stall the queue.
@@ -409,6 +413,6 @@ static const luaL_Reg functions[] = {
     {"leaderboard", l_leaderboard}, {"game_info", l_game_info}, {"chat_history", l_chat_history}, {"groups", l_groups}, {"send_group", l_send_group},
     {"net_peers", l_net_peers}, {"voice_set_push_to_talk", l_voice_set_push_to_talk}, {"voice_set_talking", l_voice_set_talking},
     {"overlay_attach", l_overlay_attach}, {"overlay_detach", l_overlay_detach}, {"overlay_frame", l_overlay_frame}, {"overlay_input", l_overlay_input},
-    {"auth_assertion", l_auth_assertion}, {"close_overlay", l_close_overlay}, {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {nullptr, nullptr}};
+    {"auth_assertion", l_auth_assertion}, {"close_overlay", l_close_overlay}, {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {"restart_if_needed", l_restart_if_needed}, {"has_capability", l_has_capability}, {nullptr, nullptr}};
 
 } // namespace wsl

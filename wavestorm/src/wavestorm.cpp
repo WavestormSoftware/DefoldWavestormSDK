@@ -409,4 +409,19 @@ int ws_open_launcher(const char *slug) {
 #endif
 }
 
+int ws_restart_if_needed(const char *slug) {
+    if (std::getenv("WAVESTORM_RUNTIME")) return 0;
+    return ws_open_launcher(slug) ? 1 : -1;
+}
+
+int ws_has_capability(const char *name) {
+    if (!name || !g) return 0;
+    const std::string &h = g->hello;
+    const size_t a = h.find("\"capabilities\":[");
+    if (a == std::string::npos) return 0;
+    const size_t b = h.find(']', a);
+    const size_t at = h.find(std::string("\"") + name + "\"", a);
+    return at != std::string::npos && at < b;
+}
+
 } // extern "C"
