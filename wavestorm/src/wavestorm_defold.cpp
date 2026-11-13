@@ -7,6 +7,30 @@
 #define LIB_NAME "wavestorm"
 #define MODULE_NAME "wavestorm"
 #include <dmsdk/sdk.h>
+
+#ifdef WS_NO_LAUNCHER
+// Web: there is no launcher to connect to. Same Lua surface ws.lua uses, answering "no runtime", so a game falls back to offline play.
+static int ws_stub_init(lua_State *L) { lua_pushboolean(L, 0); lua_pushstring(L, "no_runtime"); return 2; }
+static int ws_stub_restart_if_needed(lua_State *L) { lua_pushinteger(L, 0); return 1; } // nothing can restart a web game
+static int ws_stub_false(lua_State *L) { lua_pushboolean(L, 0); return 1; }
+static int ws_stub_nil(lua_State *L) { lua_pushnil(L); return 1; }
+static int ws_stub_none(lua_State *) { return 0; }
+static const luaL_reg ws_stub_functions[] = {
+    {"init", ws_stub_init}, {"restart_if_needed", ws_stub_restart_if_needed}, {"has_capability", ws_stub_false},
+    {"user", ws_stub_nil}, {"join_info", ws_stub_nil}, {"shutdown", ws_stub_none}, {"run_callbacks", ws_stub_none},
+    {"on", ws_stub_none}, {"call", ws_stub_none}, {"net_listen", ws_stub_none}, {"net_connect", ws_stub_none},
+    {"net_send", ws_stub_false}, {nullptr, nullptr}};
+static dmExtension::Result InitializeWavestorm(dmExtension::Params *params) {
+    luaL_register(params->m_L, MODULE_NAME, ws_stub_functions);
+    lua_pushstring(params->m_L, "web-stub"); lua_setfield(params->m_L, -2, "version");
+    lua_pop(params->m_L, 1);
+    return dmExtension::RESULT_OK;
+}
+static dmExtension::Result AppInitializeWavestorm(dmExtension::AppParams *) { return dmExtension::RESULT_OK; }
+static dmExtension::Result AppFinalizeWavestorm(dmExtension::AppParams *) { return dmExtension::RESULT_OK; }
+static dmExtension::Result FinalizeWavestorm(dmExtension::Params *) { return dmExtension::RESULT_OK; }
+DM_DECLARE_EXTENSION(EXTENSION_NAME, LIB_NAME, AppInitializeWavestorm, AppFinalizeWavestorm, InitializeWavestorm, 0, 0, FinalizeWavestorm)
+#else
 #define WS_LUA_INCLUDED
 
 struct WsCallback { dmScript::LuaCallbackInfo *cb; };
@@ -55,3 +79,4 @@ static dmExtension::Result FinalizeWavestorm(dmExtension::Params *params) {
 }
 
 DM_DECLARE_EXTENSION(EXTENSION_NAME, LIB_NAME, AppInitializeWavestorm, AppFinalizeWavestorm, InitializeWavestorm, UpdateWavestorm, 0, FinalizeWavestorm)
+#endif // WS_NO_LAUNCHER

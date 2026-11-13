@@ -1,5 +1,8 @@
 // Wavestorm SDK core: talks to the launcher's runtime over a local socket (named pipe on Windows).
 // Wire format: see apps/launcher/src/Runtime.h. One reader thread queues results/events; ws_poll hands them out.
+// Built with -DWS_NO_LAUNCHER (the Defold extension does this for web) the whole file is left out: those platforms have
+// no processes or local sockets, so there is no launcher to talk to and the binding provides its own "no runtime" stub.
+#ifndef WS_NO_LAUNCHER
 #include "wavestorm.h"
 #include <atomic>
 #include <cctype>
@@ -30,7 +33,7 @@
 extern char **environ;
 #endif
 
-#define WS_SDK_VERSION "1.1.0"
+#define WS_SDK_VERSION "1.2.4"
 static const int kProtocol = 1;
 static const uint32_t kMaxFrame = 64u << 20;
 static const size_t kMaxQueuedUnreliable = 4096; // a game that stops polling (loading screen) must not pile up position updates
@@ -425,3 +428,5 @@ int ws_has_capability(const char *name) {
 }
 
 } // extern "C"
+
+#endif // WS_NO_LAUNCHER

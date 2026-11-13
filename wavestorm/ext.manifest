@@ -16,3 +16,6 @@ platforms:
   arm64-osx:
     context:
       frameworks: ["Foundation"]
+  web:
+    context:
+      defines: ["WS_NO_LAUNCHER"]
