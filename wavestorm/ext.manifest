@@ -10,9 +10,9 @@ platforms:
   x86_64-linux:
     context:
       libs: ["pthread"]
-  x86_64-macos:
+  x86_64-osx:
     context:
       frameworks: ["Foundation"]
-  arm64-macos:
+  arm64-osx:
     context:
       frameworks: ["Foundation"]
