@@ -5,7 +5,28 @@
 -- In Defold the native module is a global. Plain Lua loads it by name; not written as require("...") because Defold's
 -- builder treats every literal require as a Lua file it must bundle, and fails on the missing wavestorm.lua.
 local load_native = require
-local native = rawget(_G, "wavestorm") or load_native("wavestorm")
+
+-- Defold calls extension callbacks as fn(self, ...); plain Lua calls fn(...). Everything below is written for the
+-- plain form, so inside Defold (the native module is a global) every function argument is wrapped to drop `self`.
+-- Without this each answer shifts by one argument: lobby.create hands the lobby code `true` instead of the lobby.
+local function adapt_defold(raw)
+  local function strip(fn) return function(_, ...) return fn(...) end end
+  local wrapped = {}
+  for k, v in pairs(raw) do
+    if type(v) == "function" then
+      wrapped[k] = function(...)
+        local args, n = { ... }, select("#", ...)
+        for i = 1, n do if type(args[i]) == "function" then args[i] = strip(args[i]) end end
+        return v((unpack or table.unpack)(args, 1, n))
+      end
+    else
+      wrapped[k] = v
+    end
+  end
+  return wrapped
+end
+local global_native = rawget(_G, "wavestorm")
+local native = global_native and adapt_defold(global_native) or load_native("wavestorm")
 local M = { native = native, available = false, error = nil }
 
 local MESSAGES = {

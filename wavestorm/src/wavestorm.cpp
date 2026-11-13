@@ -33,7 +33,7 @@
 extern char **environ;
 #endif
 
-#define WS_SDK_VERSION "1.2.4"
+#define WS_SDK_VERSION "1.2.5"
 static const int kProtocol = 1;
 static const uint32_t kMaxFrame = 64u << 20;
 static const size_t kMaxQueuedUnreliable = 4096; // a game that stops polling (loading screen) must not pile up position updates
