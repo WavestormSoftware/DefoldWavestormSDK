@@ -1,8 +1,0 @@
-[project]
-title = Wavestorm Lobby Example
-
-[bootstrap]
-main_collection = /main/main.collectionc
-
-[library]
-include_dirs = 
