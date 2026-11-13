@@ -2,7 +2,10 @@
 -- Wraps the native `wavestorm` table with the pieces a game needs: launcher-required startup, lobbies with ready flags,
 -- P2P networking between lobby members, structured presence and cloud-save slots. Everything async is cb(ok, result).
 -- Without the launcher ws.available stays false and every call fails with "unavailable", so a game can still run offline.
-local native = rawget(_G, "wavestorm") or require("wavestorm")
+-- In Defold the native module is a global. Plain Lua loads it by name; not written as require("...") because Defold's
+-- builder treats every literal require as a Lua file it must bundle, and fails on the missing wavestorm.lua.
+local load_native = require
+local native = rawget(_G, "wavestorm") or load_native("wavestorm")
 local M = { native = native, available = false, error = nil }
 
 local MESSAGES = {
