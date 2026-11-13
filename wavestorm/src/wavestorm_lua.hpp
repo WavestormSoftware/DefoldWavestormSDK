@@ -335,21 +335,6 @@ static int l_send_group(lua_State *L) {
 static int l_net_peers(lua_State *L) { return call_with(L, "net.peers", "", 1); }
 static int l_voice_set_push_to_talk(lua_State *L) { return call_with(L, "voice.setPushToTalk", "{\"enabled\":" + bool_str(L, 1) + "}", 2); }
 static int l_voice_set_talking(lua_State *L) { return call_with(L, "voice.setTalking", "{\"talking\":" + bool_str(L, 1) + "}", 2); }
-static int l_overlay_attach(lua_State *L) {
-    const lua_Integer w = luaL_checkinteger(L, 1), h = luaL_checkinteger(L, 2);
-    lua_pushboolean(L, w > 0 && h > 0 && ws_overlay_attach(uint32_t(w), uint32_t(h)));
-    return 1;
-}
-static int l_overlay_detach(lua_State *) { ws_overlay_detach(); return 0; }
-static int l_overlay_frame(lua_State *L) {
-    ws_frame f;
-    if (ws_overlay_frame(&f) && f.pixels) lua_pushlstring(L, reinterpret_cast<const char *>(f.pixels), size_t(f.width) * f.height * 4); else lua_pushnil(L);
-    lua_pushinteger(L, lua_Integer(f.width)); lua_pushinteger(L, lua_Integer(f.height));
-    return 3;
-}
-static int l_overlay_input(lua_State *L) { luaL_checktype(L, 1, LUA_TTABLE); return call_with(L, "overlay.input", table_json(L, 1), 0); }
-static int l_close_overlay(lua_State *L) { return call_with(L, "overlay.close", "", 0); }
-static int l_open_overlay(lua_State *L) { return call_with(L, "overlay.open", "", 0); }
 // restart_if_needed(slug) -> 0 running under the launcher, 1 relaunching through it (exit now), -1 could not ask it
 static int l_restart_if_needed(lua_State *L) { lua_pushinteger(L, ws_restart_if_needed(luaL_checkstring(L, 1))); return 1; }
 static int l_has_capability(lua_State *L) { lua_pushboolean(L, ws_has_capability(luaL_checkstring(L, 1))); return 1; }
@@ -412,7 +397,6 @@ static const luaL_Reg functions[] = {
     {"net_listen", l_net_listen}, {"net_connect", l_net_connect}, {"net_disconnect", l_net_disconnect}, {"net_send", l_net_send},
     {"leaderboard", l_leaderboard}, {"game_info", l_game_info}, {"chat_history", l_chat_history}, {"groups", l_groups}, {"send_group", l_send_group},
     {"net_peers", l_net_peers}, {"voice_set_push_to_talk", l_voice_set_push_to_talk}, {"voice_set_talking", l_voice_set_talking},
-    {"overlay_attach", l_overlay_attach}, {"overlay_detach", l_overlay_detach}, {"overlay_frame", l_overlay_frame}, {"overlay_input", l_overlay_input},
-    {"auth_assertion", l_auth_assertion}, {"close_overlay", l_close_overlay}, {"open_overlay", l_open_overlay}, {"open_launcher", l_open_launcher}, {"restart_if_needed", l_restart_if_needed}, {"has_capability", l_has_capability}, {nullptr, nullptr}};
+    {"auth_assertion", l_auth_assertion}, {"open_launcher", l_open_launcher}, {"restart_if_needed", l_restart_if_needed}, {"has_capability", l_has_capability}, {nullptr, nullptr}};
 
 } // namespace wsl

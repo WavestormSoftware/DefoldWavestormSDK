@@ -66,21 +66,6 @@ WS_API const char *ws_strerror(int code);       /* a sentence for a ws_init resu
  * queued. 0 on timeout or if that id isn't outstanding. For startup code; in the game loop use ws_poll. */
 WS_API int ws_wait(uint32_t id, int timeout_ms, ws_message *out);
 
-/* The overlay drawn by the game itself (works in exclusive fullscreen and on every platform): the launcher renders the
- * overlay into shared memory; draw it as one alpha-blended quad over your frame.
- *   ws_overlay_attach(width, height);             once, and again when your window size changes; blocks up to 3 s
- *   ws_frame f; if (ws_overlay_frame(&f)) upload f.pixels to your texture;   every frame; then draw the texture
- * While the overlay is open (event "overlay" {"open":true}) send the player's input with ws_call("overlay.input", ...),
- * see docs/sdk.md. */
-typedef struct ws_frame {
-    const uint8_t *pixels;   /* width*height*4 bytes, RGBA with straight (not premultiplied) alpha, top row first; NULL before the first frame */
-    uint32_t width, height;
-    uint32_t seq;            /* changes with every new frame */
-} ws_frame;
-WS_API int ws_overlay_attach(uint32_t width, uint32_t height); /* 1 if the launcher now renders the overlay for us */
-WS_API void ws_overlay_detach(void);            /* back to the launcher's own overlay window */
-WS_API int ws_overlay_frame(ws_frame *out);     /* fills *out with the latest frame; 1 if it changed since the last call */
-
 #ifdef __cplusplus
 }
 #endif

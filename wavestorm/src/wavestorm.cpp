@@ -37,7 +37,6 @@ extern char **environ;
 static const int kProtocol = 1;
 static const uint32_t kMaxFrame = 64u << 20;
 static const size_t kMaxQueuedUnreliable = 4096; // a game that stops polling (loading screen) must not pile up position updates
-static const size_t kOverlayHeader = 64;         // overlay file: "WSOV", u32 version, u32 width, u32 height, u32 seq (odd while being written), pixels at 64
 
 namespace {
 
@@ -111,50 +110,8 @@ struct Conn {
 #endif
 };
 
-// A read-only view of the launcher's overlay frame file.
-struct Mapping {
-    const uint8_t *p = nullptr; size_t n = 0;
-    bool open(const std::string &path) {
-        close();
-#ifdef _WIN32
-        int wn = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-        std::wstring w(size_t(wn), L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &w[0], wn);
-        HANDLE f = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (f == INVALID_HANDLE_VALUE) return false;
-        LARGE_INTEGER size{}; GetFileSizeEx(f, &size);
-        HANDLE m = CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
-        CloseHandle(f);
-        if (!m) return false;
-        p = static_cast<const uint8_t *>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
-        CloseHandle(m);
-        n = p ? size_t(size.QuadPart) : 0;
-#else
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd < 0) return false;
-        struct stat st{};
-        void *m = ::fstat(fd, &st) == 0 && st.st_size > 0 ? ::mmap(nullptr, size_t(st.st_size), PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
-        ::close(fd);
-        if (m != MAP_FAILED) { p = static_cast<const uint8_t *>(m); n = size_t(st.st_size); }
-#endif
-        return p != nullptr;
-    }
-    void close() {
-        if (!p) return;
-#ifdef _WIN32
-        UnmapViewOfFile(p);
-#else
-        ::munmap(const_cast<uint8_t *>(p), n);
-#endif
-        p = nullptr; n = 0;
-    }
-};
-
 struct State {
     Conn conn;
-    Mapping overlay;                  // game thread only, like the three fields below
-    std::vector<uint8_t> frame, scratch;
-    uint32_t frameSeq = 0, frameW = 0, frameH = 0;
     std::mutex m, wm;                 // m: queue/pending, wm: one writer at a time
     std::condition_variable cv;
     std::deque<Msg> queue;
@@ -225,7 +182,6 @@ void stop(State *s) {
     s->conn.interrupt();
     if (s->reader.joinable()) s->reader.join();
     s->conn.close();
-    s->overlay.close();
     delete s;
 }
 
@@ -333,51 +289,6 @@ int ws_wait(uint32_t id, int timeout_ms, ws_message *out) {
     out->kind = s->current.kind; out->id = s->current.id; out->ok = s->current.ok;
     out->name = s->current.name.c_str(); out->json = s->current.json.c_str(); out->len = uint32_t(s->current.json.size());
     return 1;
-}
-
-int ws_overlay_attach(uint32_t width, uint32_t height) {
-    State *s = g;
-    if (!s || !width || !height) return 0;
-    const std::string p = "{\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) + "}";
-    const uint32_t id = ws_call("overlay.attach", p.c_str());
-    Msg a;
-    if (!id || !takeResult(s, id, 3000, a) || !a.ok) return 0;
-    s->frameSeq = 0; s->frame.clear();
-    if (!s->overlay.open(jsonString(a.json, "path"))) return 0;
-    const uint8_t *h = s->overlay.p;
-    if (s->overlay.n >= kOverlayHeader && !std::memcmp(h, "WSOV", 4)) {
-        s->frameW = get32(reinterpret_cast<const char *>(h + 8)); s->frameH = get32(reinterpret_cast<const char *>(h + 12));
-        if (s->frameW && s->frameH && uint64_t(s->frameW) * s->frameH * 4 <= s->overlay.n - kOverlayHeader) return 1;
-    }
-    s->overlay.close();
-    return 0;
-}
-
-void ws_overlay_detach(void) {
-    State *s = g;
-    if (!s) return;
-    s->overlay.close(); s->frame.clear(); s->frameSeq = 0;
-    ws_call("overlay.detach", nullptr);
-}
-
-int ws_overlay_frame(ws_frame *out) {
-    State *s = g;
-    if (!out) return 0;
-    *out = ws_frame{};
-    if (!s || !s->overlay.p) return 0;
-    // The launcher makes seq odd, writes the pixels, then makes it even again: a copy is good if seq didn't move meanwhile.
-    const auto *seq = reinterpret_cast<const std::atomic<uint32_t> *>(s->overlay.p + 16);
-    const uint32_t before = seq->load(std::memory_order_acquire);
-    int fresh = 0;
-    if (before != s->frameSeq && !(before & 1)) {
-        const size_t n = size_t(s->frameW) * s->frameH * 4;
-        s->scratch.resize(n);
-        std::memcpy(s->scratch.data(), s->overlay.p + kOverlayHeader, n);
-        if (seq->load(std::memory_order_acquire) == before) { s->frame.swap(s->scratch); s->frameSeq = before; fresh = 1; }
-    }
-    out->pixels = s->frame.empty() ? nullptr : s->frame.data();
-    out->width = s->frameW; out->height = s->frameH; out->seq = s->frameSeq;
-    return fresh;
 }
 
 int ws_send_packet(uint32_t peer, int reliable, const void *data, uint32_t len) {
