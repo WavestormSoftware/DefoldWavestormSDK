@@ -55,7 +55,11 @@ function M.init()
   M.available, M.error = ok and true or false, err
   if ok then
     native.net_listen(function() end)
-    native.on("join", function(info) M._join(info) end)
+    -- The launcher sends a running game { joinInfo = "lobby:<id>" }; at launch join_info() is the bare string.
+    native.on("join", function(info) M._join(type(info) == "table" and info.joinInfo or info) end)
+    for _, ev in ipairs({ "installed", "removed" }) do
+      native.on("workshop." .. ev, function(d) M.workshop._event(ev, d) end)
+    end
     for _, ev in ipairs({ "member_joined", "member_left", "member_kicked", "member_updated", "updated", "started", "chat", "kicked" }) do
       native.on("lobby." .. ev, function(d) M.lobby._event(ev, d) end)
     end
@@ -88,9 +92,15 @@ local function emit(name, ...) for _, fn in ipairs(L._handlers[name] or {}) do f
 -- Events: "joined", "left", "updated", "member_joined", "member_left", "member_updated", "started", "chat", "kicked".
 function L.on(name, fn) local h = L._handlers; h[name] = h[name] or {}; table.insert(h[name], fn) end
 
+-- Friends see "Join" and invites outside lobby.invite carry a join target only when presence advertises it.
+local function advertise(lobby)
+  call("presence.set", { joinInfo = lobby and ("lobby:" .. string.format("%d", lobby.id)) or "" }, nil)
+end
+
 local function adopt(lobby)
   local had = L.current
   L.current = lobby
+  if (had and had.id) ~= (lobby and lobby.id) then advertise(lobby) end
   if lobby then M.net._connect_members(lobby) end
   if lobby and not had then emit("joined", lobby) end
   if had and not lobby then emit("left") end
@@ -166,6 +176,18 @@ function N.broadcast(bytes, reliable)
 end
 function N.on_packet(fn) N._handler = fn end -- fn(user_id, bytes, reliable)
 function N.connected(user_id) return N._peers[user_id] == true end
+
+-- ---- workshop: items the player subscribed to are installed by the launcher; the game reads them from disk.
+-- subscribed(cb) -> list of { itemId, title, path, version, enabled, ... }; query{q=, tag=, sort=, page=}.
+-- Events: "installed" (d.itemId, d.path) and "removed" (d.itemId). Updates wait until the game closes.
+local W = { _handlers = {} }
+M.workshop = W
+function W.subscribed(cb) call("workshop.subscribed", nil, cb) end
+function W.query(params, cb) call("workshop.query", params or {}, cb) end
+function W.subscribe(item_id, cb) call("workshop.subscribe", { itemId = item_id }, cb) end
+function W.unsubscribe(item_id, cb) call("workshop.unsubscribe", { itemId = item_id }, cb) end
+function W.on(name, fn) local h = W._handlers; h[name] = h[name] or {}; table.insert(h[name], fn) end
+function W._event(name, d) for _, fn in ipairs(W._handlers[name] or {}) do fn(d) end end
 
 -- ---- cloud-save slots: opaque strings, up to ~380 KB each (the launcher limits one call to 512 KB of base64).
 local S = {}
