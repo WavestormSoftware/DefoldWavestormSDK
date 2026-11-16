@@ -22,6 +22,7 @@
 //           "voice.joined"/"voice.left" (d.userId), "voice.speaking" (d.userId, d.speaking)
 //   events: wavestorm.on("workshop.installed", function(d) -- d.itemId, d.path end), wavestorm.on("workshop.removed", ...)
 //   wavestorm.unlock_achievement(api_name, cb), wavestorm.achievements(cb), wavestorm.stats(cb), wavestorm.set_stats({name = value}, cb)
+//   wavestorm.party_info(cb)                  r = {inParty, partyId, size, maxSize, leader, leaderId, members = {{id, username, leader}}}
 //   wavestorm.leaderboard(stat_api_name, cb)  r.entries[i] = {rank, globalRank, userId, username, value}, r.players
 //   wavestorm.game_info(cb)  {gameId, title, slug, version, installPath};  wavestorm.chat_history(user_id, cb)
 //   wavestorm.groups(cb), wavestorm.send_group(group_id, text, cb), wavestorm.close_overlay(), wavestorm.net_peers(cb)
@@ -325,6 +326,7 @@ static int l_leaderboard(lua_State *L) {
     return call_with(L, "leaderboards.get", p, 2);
 }
 static int l_game_info(lua_State *L) { return call_with(L, "game.info", "", 1); }
+static int l_party_info(lua_State *L) { return call_with(L, "party.info", "", 1); }
 static int l_chat_history(lua_State *L) { return call_with(L, "chat.history", user_id_json(L, 1), 2); }
 static int l_groups(lua_State *L) { return call_with(L, "groups.list", "", 1); }
 static int l_send_group(lua_State *L) {
@@ -395,7 +397,7 @@ static const luaL_Reg functions[] = {
     {"voice_join", l_voice_join}, {"voice_leave", l_voice_leave}, {"voice_state", l_voice_state}, {"voice_set_muted", l_voice_set_muted},
     {"voice_set_deafened", l_voice_set_deafened}, {"voice_set_user_muted", l_voice_set_user_muted}, {"voice_set_user_volume", l_voice_set_user_volume},
     {"net_listen", l_net_listen}, {"net_connect", l_net_connect}, {"net_disconnect", l_net_disconnect}, {"net_send", l_net_send},
-    {"leaderboard", l_leaderboard}, {"game_info", l_game_info}, {"chat_history", l_chat_history}, {"groups", l_groups}, {"send_group", l_send_group},
+    {"leaderboard", l_leaderboard}, {"game_info", l_game_info}, {"party_info", l_party_info}, {"chat_history", l_chat_history}, {"groups", l_groups}, {"send_group", l_send_group},
     {"net_peers", l_net_peers}, {"voice_set_push_to_talk", l_voice_set_push_to_talk}, {"voice_set_talking", l_voice_set_talking},
     {"auth_assertion", l_auth_assertion}, {"open_launcher", l_open_launcher}, {"restart_if_needed", l_restart_if_needed}, {"has_capability", l_has_capability}, {nullptr, nullptr}};
 
