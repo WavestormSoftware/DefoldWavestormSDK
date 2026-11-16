@@ -17,7 +17,7 @@
 //   wavestorm.workshop_set_enabled(id, on, cb), workshop_create_item({title=, description=}, cb), workshop_upload_version(id, folder, version, changelog, cb)
 //   wavestorm.voice_join(room, cb), voice_leave(cb), voice_state(cb), voice_set_muted(bool, cb), voice_set_deafened(bool, cb),
 //   wavestorm.voice_set_user_muted(user_id, bool, cb), voice_set_user_volume(user_id, 0..2, cb)
-//   wavestorm.net_listen(cb), net_connect(user_id, cb), net_disconnect(user_id, cb), net_send(user_id, bytes, reliable) -> queued?
+//   wavestorm.net_listen(cb), net_connect(user_id, cb), net_disconnect(user_id, cb), net_send(user_id, bytes, reliable) -> queued? (user_id 0: everyone, via the relay host if set)
 //   events: wavestorm.on("net.packet", function(user_id, reliable, bytes) end), "net.connected"/"net.disconnected" (d.userId),
 //           "voice.joined"/"voice.left" (d.userId), "voice.speaking" (d.userId, d.speaking)
 //   events: wavestorm.on("workshop.installed", function(d) -- d.itemId, d.path end), wavestorm.on("workshop.removed", ...)
@@ -316,7 +316,7 @@ static int l_net_connect(lua_State *L) { return call_with(L, "net.connect", "{\"
 static int l_net_disconnect(lua_State *L) { return call_with(L, "net.disconnect", "{\"userId\":" + std::to_string(luaL_checkinteger(L, 1)) + "}", 2); }
 static int l_net_send(lua_State *L) {
     const lua_Integer id = luaL_checkinteger(L, 1); size_t n; const char *s = luaL_checklstring(L, 2, &n);
-    lua_pushboolean(L, id > 0 && n <= 16000 && ws_send_packet(uint32_t(id), lua_toboolean(L, 3), s, uint32_t(n)));
+    lua_pushboolean(L, id >= 0 && n <= 16000 && ws_send_packet(uint32_t(id), lua_toboolean(L, 3), s, uint32_t(n)));
     return 1;
 }
 static std::string user_id_json(lua_State *L, int i) { return "{\"userId\":" + std::to_string(luaL_checkinteger(L, i)) + "}"; }

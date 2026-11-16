@@ -64,8 +64,8 @@ function M.init()
       native.on("lobby." .. ev, function(d) M.lobby._event(ev, d) end)
     end
     native.on("net.packet", function(user, reliable, bytes) if M.net._handler then M.net._handler(user, bytes, reliable) end end)
-    native.on("net.connected", function(d) M.net._peers[d.userId] = true end)
-    native.on("net.disconnected", function(d) M.net._peers[d.userId] = nil end)
+    native.on("net.connected", function(d) M.net._up(d.userId) end)
+    native.on("net.disconnected", function(d) M.net._down(d.userId) end)
     M._join(native.join_info())
   end
   return ok, err
@@ -154,28 +154,74 @@ function M._join(info)
 end
 
 -- ---- P2P between lobby members. The lower user id dials the higher one; everybody listens. Packets are raw strings (<= 16000 bytes).
-local N = { _peers = {}, _handler = nil, _dialing = {} }
+-- A dial that fails, hangs or drops is tried again: on the next lobby event, on a send to that player (at most once a
+-- second) or right after a disconnect. Big lobbies: set_relay(host_id, true) links every client to the host only.
+local N = { _peers = {}, _handler = nil, _dialing = {}, _retry_at = {}, _relay = nil, _relay_only = false }
 M.net = N
+N.DIAL_STALE, N.RETRY_AFTER = 30, 2 -- seconds: a dial with no answer by then is tried again; wait after a failure
+local function now() return os.time() end
+local next_sweep = 0
+-- In relay-only mode a client links to the host alone; otherwise every pair links.
+local function wanted(me_id, other_id)
+  if N._relay_only and N._relay then return me_id == N._relay or other_id == N._relay end
+  return true
+end
 function N._connect_members(lobby)
-  local me = M.user(); if not me then return end
-  for _, m in ipairs(lobby.members) do
-    if m.id > me.id and not N._peers[m.id] and not N._dialing[m.id] then
-      N._dialing[m.id] = true
-      native.net_connect(m.id, function() N._dialing[m.id] = nil end)
+  local me = M.user(); if not me or not lobby then return end
+  local t = now()
+  for _, m in ipairs(lobby.members or {}) do
+    local id, started = m.id, N._dialing[m.id]
+    if id > me.id and wanted(me.id, id) and not N._peers[id] and (not started or t - started > N.DIAL_STALE) and t >= (N._retry_at[id] or 0) then
+      N._dialing[id] = t
+      native.net_connect(id, function(ok)
+        if N._dialing[id] == t then N._dialing[id] = nil end
+        if not ok then N._retry_at[id] = now() + N.RETRY_AFTER end
+      end)
     end
   end
 end
-function N.send(user_id, bytes, reliable) return native.net_send(user_id, bytes, reliable ~= false) end
+local function sweep()
+  local t = now()
+  if t >= next_sweep and L.current then next_sweep = t + 1; N._connect_members(L.current) end
+end
+function N._up(user_id) N._peers[user_id], N._dialing[user_id], N._retry_at[user_id] = true, nil, nil end
+function N._down(user_id)
+  N._peers[user_id], N._dialing[user_id] = nil, nil
+  if L.current then N._connect_members(L.current) end -- still a member: link again
+end
+-- Through the relay host when there is no direct link (the launcher picks the route). user_id 0 sends to everyone.
+function N.send(user_id, bytes, reliable)
+  if user_id ~= 0 and not N._peers[user_id] then sweep() end
+  return native.net_send(user_id, bytes, reliable ~= false)
+end
 -- To everyone in the lobby except yourself (the host-authoritative pattern: clients call N.send(host_id, ...)).
 function N.broadcast(bytes, reliable)
   local me, n = M.user(), 0
-  for _, m in ipairs(L.current and L.current.members or {}) do
-    if me and m.id ~= me.id and N._peers[m.id] and N.send(m.id, bytes, reliable) then n = n + 1 end
+  if not me then return 0 end
+  local members = L.current and L.current.members or {}
+  if N._relay_only and N._relay and N._relay ~= me.id then -- one packet; the host hands it to everyone
+    return N.send(0, bytes, reliable) and #members - 1 or 0
+  end
+  for _, m in ipairs(members) do
+    if m.id ~= me.id and N.connected(m.id) and N.send(m.id, bytes, reliable) then n = n + 1 end
   end
   return n
 end
 function N.on_packet(fn) N._handler = fn end -- fn(user_id, bytes, reliable)
-function N.connected(user_id) return N._peers[user_id] == true end
+-- Relay game packets through `host_id` (every player passes the same host; the host passes its own id). Clients send
+-- what they cannot deliver directly through the host. `only`: clients link to the host alone (lobbies past ~8 players).
+-- nil turns it off. Needs launcher 0.10.4+; older launchers answer with an error and keep direct links only.
+function N.set_relay(host_id, only, cb)
+  N._relay, N._relay_only = host_id, host_id ~= nil and only == true
+  call("net.relay", { hostId = host_id or 0 }, cb)
+  if L.current then N._connect_members(L.current) end
+end
+-- A direct link, or a link to the relay host that forwards for us.
+function N.connected(user_id)
+  if N._peers[user_id] then return true end
+  local me = M.user()
+  return N._relay ~= nil and me ~= nil and me.id ~= N._relay and user_id ~= N._relay and N._peers[N._relay] == true
+end
 
 -- ---- workshop: items the player subscribed to are installed by the launcher; the game reads them from disk.
 -- subscribed(cb) -> list of { itemId, title, path, version, enabled, ... }; query{q=, tag=, sort=, page=}.
