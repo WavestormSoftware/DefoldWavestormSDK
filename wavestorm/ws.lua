@@ -158,7 +158,7 @@ end
 -- second) or right after a disconnect. Big lobbies: set_relay(host_id, true) links every client to the host only.
 local N = { _peers = {}, _handler = nil, _dialing = {}, _retry_at = {}, _relay = nil, _relay_only = false }
 M.net = N
-N.DIAL_STALE, N.RETRY_AFTER = 30, 2 -- seconds: a dial with no answer by then is tried again; wait after a failure
+N.DIAL_STALE, N.RETRY_AFTER = 25, 2 -- seconds: a dial with no answer by then is tried again (launchers answer within 20 s); wait after a failure
 local function now() return os.time() end
 local next_sweep = 0
 -- In relay-only mode a client links to the host alone; otherwise every pair links.

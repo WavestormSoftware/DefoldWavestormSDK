@@ -33,20 +33,43 @@ DM_DECLARE_EXTENSION(EXTENSION_NAME, LIB_NAME, AppInitializeWavestorm, AppFinali
 #else
 #define WS_LUA_INCLUDED
 
-struct WsCallback { dmScript::LuaCallbackInfo *cb; };
+// Each callback also keeps a registry reference to its function. Defold ties a callback to the script that made the
+// request; when that script is deleted (a menu collection unloaded while the launcher was still answering), the answer
+// would be lost and the caller would wait forever (a P2P dial looks "in progress" until it goes stale). Such orphaned
+// answers are still delivered, with self = nil. ws.lua drops self anyway, so its bookkeeping stays correct.
+struct WsCallback { dmScript::LuaCallbackInfo *cb; lua_State *L; int ref; bool orphan; };
 static WsCallback *g_current = nullptr;
 
-static WsCallback *ws_cb_create(lua_State *L, int index) { return new WsCallback{dmScript::CreateCallback(L, index)}; }
-static void ws_cb_destroy(WsCallback *c) { if (!c) return; if (c->cb) dmScript::DestroyCallback(c->cb); delete c; }
+static WsCallback *ws_cb_create(lua_State *L, int index) {
+    lua_pushvalue(L, index);
+    const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    return new WsCallback{dmScript::CreateCallback(L, index), dmScript::GetMainThread(L), ref, false};
+}
+static void ws_cb_destroy(WsCallback *c) {
+    if (!c) return;
+    if (c->cb) dmScript::DestroyCallback(c->cb);
+    if (c->ref != LUA_NOREF) luaL_unref(c->L, LUA_REGISTRYINDEX, c->ref);
+    delete c;
+}
 static bool ws_cb_begin(WsCallback *c, lua_State **L) {
-    // The script that registered it may have been deleted (collection unloaded): skip instead of crashing.
-    if (!c->cb || !dmScript::IsCallbackValid(c->cb)) return false;
-    lua_State *CL = dmScript::GetCallbackLuaContext(c->cb);
-    if (!dmScript::SetupCallback(c->cb)) return false; // pushes the function and self
-    *L = CL; g_current = c;
+    if (c->cb && dmScript::IsCallbackValid(c->cb)) {
+        lua_State *CL = dmScript::GetCallbackLuaContext(c->cb);
+        if (dmScript::SetupCallback(c->cb)) { // pushes the function and self
+            c->orphan = false; *L = CL; g_current = c;
+            return true;
+        }
+    }
+    if (c->ref == LUA_NOREF) return false;
+    lua_rawgeti(c->L, LUA_REGISTRYINDEX, c->ref);
+    lua_pushnil(c->L); // self: the script is gone
+    c->orphan = true; *L = c->L; g_current = c;
     return true;
 }
 static void ws_cb_call(lua_State *L, int nargs) {
+    if (g_current->orphan) {
+        if (lua_pcall(L, nargs + 1, 0, 0) != 0) { dmLogError("wavestorm callback: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
+        return;
+    }
     dmScript::PCall(L, nargs + 1, 0); // +1: self; errors are logged by Defold
     dmScript::TeardownCallback(g_current->cb);
 }
