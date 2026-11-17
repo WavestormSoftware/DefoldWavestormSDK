@@ -1,6 +1,6 @@
 -- Wavestorm SDK, high-level Lua layer (Defold and plain Lua 5.1+/LuaJIT). `local ws = require "wavestorm.ws"`.
 -- Wraps the native `wavestorm` table with the pieces a game needs: launcher-required startup, lobbies with ready flags,
--- P2P networking between lobby members, structured presence and cloud-save slots. Everything async is cb(ok, result).
+-- P2P networking between lobby members, structured presence, the launcher party, voice and cloud-save slots. Everything async is cb(ok, result).
 -- Without the launcher ws.available stays false and every call fails with "unavailable", so a game can still run offline.
 -- In Defold the native module is a global. Plain Lua loads it by name; not written as require("...") because Defold's
 -- builder treats every literal require as a Lua file it must bundle, and fails on the missing wavestorm.lua.
@@ -63,6 +63,10 @@ function M.init()
     for _, ev in ipairs({ "member_joined", "member_left", "member_kicked", "member_updated", "updated", "started", "chat", "kicked" }) do
       native.on("lobby." .. ev, function(d) M.lobby._event(ev, d) end)
     end
+    native.on("party.changed", function(d) M.party._event("changed", d) end)
+    for _, ev in ipairs({ "joined", "left", "speaking" }) do
+      native.on("voice." .. ev, function(d) M.voice._event(ev, d) end)
+    end
     native.on("net.packet", function(user, reliable, bytes) if M.net._handler then M.net._handler(user, bytes, reliable) end end)
     native.on("net.connected", function(d) M.net._up(d.userId) end)
     native.on("net.disconnected", function(d) M.net._down(d.userId) end)
@@ -83,7 +87,51 @@ function M.unlock_achievement(name, cb) call("achievements.unlock", { apiName = 
 function M.achievements(cb) call("achievements.list", nil, cb) end
 function M.on(event, fn) native.on(event, fn) end
 -- Presence: text plus optional key/value table (values are strings), shown to friends and in the overlay.
-function M.set_presence(text, kv) call("presence.set", { text = text, kv = kv }, nil) end
+-- opts (optional): { joinable = "friends"|"invite"|"off", partySize = 2, partyMax = 4 } for the launcher's "Join" button and "2/4".
+function M.set_presence(text, kv, opts)
+  local p = { text = text, kv = kv }
+  for _, k in ipairs({ "joinable", "partySize", "partyMax" }) do if opts and opts[k] ~= nil then p[k] = opts[k] end end
+  call("presence.set", p, nil)
+end
+
+-- Events the launcher sends once per name: native `on` keeps one handler per event, so these fan out to many listeners.
+local function fanout(handlers)
+  return function(name, fn) handlers[name] = handlers[name] or {}; table.insert(handlers[name], fn) end,
+    function(name, d) for _, fn in ipairs(handlers[name] or {}) do fn(d) end end
+end
+local function capable(name, cb)
+  if M.available and native.has_capability(name) then return true end
+  if cb then cb(false, { error = M.available and "unsupported" or "unavailable" }) end
+  return false
+end
+
+-- ---- party (launcher 0.11+): the party is managed in the launcher; the game reads it and hears when it changes.
+-- info(cb) -> { inParty = false } or { inParty, partyId, size, maxSize, leader, leaderId, voiceRoom, inVoice, joinInfo,
+-- members = { { id, username, displayName, leader } } }. Event "changed" carries the same table.
+local P = { _handlers = {} }
+M.party = P
+P.on, P._event = fanout(P._handlers)
+function P.info(cb) if capable("party", cb) then call("party.info", nil, cb) end end
+
+-- ---- voice: game rooms ("game:<gameId>:<room>", up to 8 players) or the player's launcher party room.
+-- Events: "joined" { userId, username }, "left" { userId }, "speaking" { userId, speaking } (any room, also party voice).
+-- Muted and deafened are the launcher-wide switches. Push to talk: set_push_to_talk(true), then set_talking while the key is held.
+local V = { _handlers = {} }
+M.voice = V
+V.on, V._event = fanout(V._handlers)
+local function vcall(method, params, cb, cap) if capable(cap or "voice", cb) then call(method, params, cb) end end
+function V.join(room, cb) vcall("voice.join", { room = room }, cb) end
+function V.leave(cb) vcall("voice.leave", nil, cb) end
+function V.join_party(cb) vcall("voice.joinParty", nil, cb, "party.voice") end -- fails "not in a party" or "the player is in a call"
+function V.leave_party(cb) vcall("voice.leaveParty", nil, cb, "party.voice") end
+-- state(cb) -> { inRoom, room = "game"|"party"|"", muted, deafened, participants = { { id, username, speaking, muted, ... } } }
+function V.state(cb) vcall("voice.state", nil, cb) end
+function V.set_muted(on, cb) vcall("voice.setMuted", { muted = on == true }, cb) end
+function V.set_deafened(on, cb) vcall("voice.setDeafened", { deafened = on == true }, cb) end
+function V.set_push_to_talk(on, cb) vcall("voice.setPushToTalk", { enabled = on == true }, cb) end
+function V.set_talking(on, cb) vcall("voice.setTalking", { talking = on == true }, cb) end
+function V.set_user_muted(user_id, on, cb) vcall("voice.setUserMuted", { userId = user_id, muted = on == true }, cb) end
+function V.set_user_volume(user_id, volume, cb) vcall("voice.setUserVolume", { userId = user_id, volume = volume }, cb) end -- 0..2
 
 -- ---- lobbies
 local L = { current = nil, _handlers = {} }
